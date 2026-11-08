@@ -19,7 +19,7 @@ Lossless Link streams everything Windows plays as **uncompressed ALAC (16-bit/44
 - **KEF integration.** It connects when you switch the speaker on and never wakes a speaker in standby. When Spotify, Tidal, Qobuz or Bluetooth takes over, it steps aside and comes back once the other source has gone quiet.
 - **Recovers on its own.** It reconnects after sleep, Wi-Fi drops and speaker restarts. Audio threads run under the Windows multimedia scheduler (MMCSS), so CPU load elsewhere doesn't cause dropouts.
 - **Updates itself.** A minute after start and every six hours it looks for a new release. It downloads it, checks it against the SHA-256 published with the release, and installs it once the audio has been quiet for a minute, so an update never cuts into a film. Turn this off with **Automatic updates** in the menu.
-- **Small.** It's a single executable of about 3 MB with no runtime to install. It lives in the notification area and uses about 1% of one CPU core.
+- **Small.** It's a single executable of about 4 MB with no runtime to install. It lives in the notification area and uses about 1% of one CPU core.
 - **English and Turkish.** The language follows the Windows display language.
 
 ## Requirements
