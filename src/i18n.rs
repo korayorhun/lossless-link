@@ -31,7 +31,16 @@ text! {
     menu_autostart: "Start with Windows", "Windows ile başlat";
     menu_firewall: "Allow through Windows Firewall…", "Güvenlik duvarında izin ver…";
     menu_log: "Open log", "Günlüğü aç";
+    menu_auto_update: "Automatic updates", "Otomatik güncelle";
     menu_quit: "Quit", "Kapat";
+}
+
+pub fn install_update(tag: &str) -> String {
+    if turkish() { format!("Güncellemeyi şimdi yükle ({tag})") } else { format!("Install update {tag} now") }
+}
+
+pub fn updated(version: &str) -> String {
+    if turkish() { format!("{version} sürümüne güncellendi") } else { format!("Updated to version {version}") }
 }
 
 pub fn connecting(speaker: &str) -> String {

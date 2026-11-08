@@ -19,11 +19,12 @@ pub struct Config {
     pub capture_device: Option<String>,
     /// Highest speaker volume the Windows volume keys can set.
     pub max_volume: u32,
+    pub auto_update: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { latency_ms: 100, speaker: None, capture_device: None, max_volume: 70 }
+        Self { latency_ms: 100, speaker: None, capture_device: None, max_volume: 70, auto_update: true }
     }
 }
 

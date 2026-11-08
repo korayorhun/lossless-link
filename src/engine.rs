@@ -6,8 +6,9 @@ use crate::config::{Config, SpeakerRef};
 use crate::devices::{self, Volume, ALL_ROLES};
 use crate::discovery::Speaker;
 use crate::raop::{FirewallBlocked, Session};
-use crate::{i18n, kef, tray};
+use crate::{i18n, kef, tray, update};
 use std::net::IpAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering::Relaxed};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -48,6 +49,9 @@ pub struct Shared {
     pub capture: Mutex<Option<Arc<Capture>>>,
     pub hwnd: AtomicIsize,
     pub stopping: AtomicBool,
+    /// A verified download waiting to be installed: (tag, path).
+    pub update_ready: Mutex<Option<(String, PathBuf)>>,
+    pub restart_for_update: AtomicBool,
 }
 
 pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -65,7 +69,15 @@ impl Shared {
             capture: Mutex::new(None),
             hwnd: AtomicIsize::new(0),
             stopping: AtomicBool::new(false),
+            update_ready: Mutex::new(None),
+            restart_for_update: AtomicBool::new(false),
         })
+    }
+
+    /// Shows a notification without changing the status.
+    pub fn notify(&self, text: String) {
+        *lock(&self.balloon) = Some(text);
+        tray::refresh(self);
     }
 
     /// Shows a new status in the tray; with `balloon`, also as a notification (only when the status changes).
@@ -124,6 +136,54 @@ pub fn volume_loop(shared: Arc<Shared>) {
             }
         }
     }
+}
+
+/// Looks for a new release a minute after start and then every six hours, and installs a downloaded one once
+/// the audio has been quiet for a minute, so an update never cuts into a film or a song.
+pub fn updater_loop(shared: Arc<Shared>) {
+    const CHECK_EVERY: Duration = Duration::from_secs(6 * 3600);
+    const QUIET: Duration = Duration::from_secs(60);
+    let mut next_check = Instant::now() + Duration::from_secs(60);
+    while !shared.stopping.load(Relaxed) {
+        thread::sleep(Duration::from_secs(5));
+        if !lock(&shared.config).auto_update {
+            continue;
+        }
+        if Instant::now() >= next_check {
+            next_check = Instant::now() + CHECK_EVERY;
+            update::clean_up();
+            if lock(&shared.update_ready).is_none() {
+                check_for_update(&shared);
+            }
+        }
+        let quiet = lock(&shared.capture).as_ref().map_or(Duration::MAX, |c| c.quiet_for());
+        if lock(&shared.update_ready).is_some() && quiet >= QUIET {
+            log::info!("the audio has been quiet for a minute: installing the update");
+            restart_for_update(&shared);
+            return;
+        }
+    }
+}
+
+fn check_for_update(shared: &Shared) {
+    match update::latest_tag() {
+        Ok(tag) if update::is_newer(&tag) => match update::download_verified(&tag) {
+            Ok(path) => {
+                log::info!("downloaded and verified {tag}");
+                *lock(&shared.update_ready) = Some((tag, path));
+                tray::refresh(shared);
+            }
+            Err(e) => log::warn!("downloading {tag}: {e:#}"),
+        },
+        Ok(tag) => log::info!("up to date (latest release {tag})"),
+        Err(e) => log::warn!("checking for updates: {e:#}"),
+    }
+}
+
+/// Quits so that `main` can swap in the downloaded version and start it.
+pub fn restart_for_update(shared: &Shared) {
+    shared.restart_for_update.store(true, Relaxed);
+    tray::close(shared);
 }
 
 struct Supervisor {

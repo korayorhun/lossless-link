@@ -7,10 +7,10 @@ use crate::raop::{FRAMES, RATE};
 use anyhow::{bail, Result};
 use rubato::{FftFixedIn, Resampler};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::Win32::Media::Audio::{
     IAudioCaptureClient, IAudioClient, IAudioRenderClient, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
     AUDCLNT_STREAMFLAGS_LOOPBACK, WAVEFORMATEX,
@@ -41,6 +41,8 @@ pub struct Capture {
     fifo: Mutex<Fifo>,
     gain: AtomicU32,
     running: AtomicBool,
+    started: Instant,
+    last_sound_ms: AtomicU64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -124,6 +126,8 @@ impl Capture {
             }),
             gain: AtomicU32::new(1f32.to_bits()),
             running: AtomicBool::new(true),
+            started: Instant::now(),
+            last_sound_ms: AtomicU64::new(0),
         });
         for (name, body) in [("keepalive", Self::keep_alive as fn(&Self) -> Result<()>), ("capture", Self::record)] {
             let c = capture.clone();
@@ -164,6 +168,11 @@ impl Capture {
 
     pub fn stats(&self) -> Stats {
         lock(&self.fifo).stats
+    }
+
+    /// How long nothing above about -80 dBFS has played; updates wait for a quiet moment.
+    pub fn quiet_for(&self) -> Duration {
+        self.started.elapsed().saturating_sub(Duration::from_millis(self.last_sound_ms.load(Relaxed)))
     }
 
     /// Fills one packet. Waits (silence) until 30 ms are buffered, then keeps the buffer near that level:
@@ -297,6 +306,9 @@ impl Capture {
                 converter.process(&mut left, &mut right, &mut out)?;
                 if !out.is_empty() {
                     let pcm: Vec<i16> = out.iter().map(|&x| to_i16(x)).collect();
+                    if pcm.iter().any(|s| s.unsigned_abs() > 3) {
+                        self.last_sound_ms.store(self.started.elapsed().as_millis() as u64, Relaxed);
+                    }
                     self.push(&pcm);
                     out.clear();
                 }

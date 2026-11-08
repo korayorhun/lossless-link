@@ -17,14 +17,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --release
       - run: cargo build --release
-      - run: Copy-Item target/release/lossless-link.exe LosslessLink.exe
+      - name: Package with a SHA-256 for the updater
+        run: |
+          Copy-Item target/release/lossless-link.exe LosslessLink.exe
+          $hash = (Get-FileHash LosslessLink.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  LosslessLink.exe" | Out-File LosslessLink.exe.sha256 -Encoding ascii -NoNewline
       - uses: actions/upload-artifact@v4
         with:
           name: LosslessLink
-          path: LosslessLink.exe
+          path: |
+            LosslessLink.exe
+            LosslessLink.exe.sha256
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: LosslessLink.exe
+          files: |
+            LosslessLink.exe
+            LosslessLink.exe.sha256
           generate_release_notes: true

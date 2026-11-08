@@ -2,8 +2,8 @@
 
 use crate::devices;
 use crate::discovery::Speaker;
-use crate::engine::{lock, Command, Shared, State, LATENCIES_MS};
-use crate::{i18n, system};
+use crate::engine::{self, lock, Command, Shared, State, LATENCIES_MS};
+use crate::{i18n, system, update};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering::Relaxed;
@@ -38,6 +38,8 @@ const ID_AUTOSTART: usize = 3;
 const ID_FIREWALL: usize = 4;
 const ID_LOG: usize = 5;
 const ID_QUIT: usize = 6;
+const ID_AUTO_UPDATE: usize = 7;
+const ID_INSTALL_UPDATE: usize = 8;
 const ID_SPEAKER: usize = 100;
 const ID_LATENCY: usize = 200;
 const ID_CAPTURE: usize = 300;
@@ -239,10 +241,15 @@ unsafe fn show_menu(hwnd: HWND) {
         submenu(menu, sub, i18n::menu_capture());
     }
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    if let Some((tag, _)) = lock(&shared.update_ready).as_ref() {
+        append(menu, MF_STRING, ID_INSTALL_UPDATE, &i18n::install_update(tag));
+    }
+    append(menu, checked(config.auto_update), ID_AUTO_UPDATE, i18n::menu_auto_update());
     append(menu, checked(system::autostart_enabled()), ID_AUTOSTART, i18n::menu_autostart());
     append(menu, MF_STRING, ID_FIREWALL, i18n::menu_firewall());
     append(menu, MF_STRING, ID_LOG, i18n::menu_log());
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    append(menu, MF_STRING | MF_GRAYED, 0, &format!("Lossless Link {}", update::current()));
     append(menu, MF_STRING, ID_QUIT, i18n::menu_quit());
 
     let mut point = POINT::default();
@@ -257,6 +264,16 @@ unsafe fn show_menu(hwnd: HWND) {
         ID_DISCONNECT => Some(Command::Disconnect),
         ID_AUTOSTART => {
             system::set_autostart(!system::autostart_enabled());
+            None
+        }
+        ID_AUTO_UPDATE => {
+            let mut config = lock(&shared.config);
+            config.auto_update = !config.auto_update;
+            config.save();
+            None
+        }
+        ID_INSTALL_UPDATE => {
+            engine::restart_for_update(&shared);
             None
         }
         ID_FIREWALL => {
