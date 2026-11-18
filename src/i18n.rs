@@ -27,6 +27,7 @@ text! {
     menu_speaker: "Speaker", "Hoparlör";
     menu_searching: "Searching…", "Aranıyor…";
     menu_latency: "Latency (lower it if the sound lags behind the picture)", "Gecikme (ses görüntüden geride kalırsa azaltın)";
+    menu_latency_auto: "Automatic (recommended)", "Otomatik (önerilen)";
     menu_capture: "Capture from (an output with nothing connected)", "Yakalanacak çıkış (hiçbir şey bağlı olmayan)";
     menu_autostart: "Start with Windows", "Windows ile başlat";
     menu_firewall: "Allow through Windows Firewall…", "Güvenlik duvarında izin ver…";
@@ -47,11 +48,32 @@ pub fn connecting(speaker: &str) -> String {
     if turkish() { format!("{speaker} hoparlörüne bağlanıyor…") } else { format!("Connecting to {speaker}…") }
 }
 
-pub fn connected(speaker: &str, latency_ms: u32) -> String {
+pub fn connected(speaker: &str, latency_ms: u32, auto: bool) -> String {
+    match (turkish(), auto) {
+        (true, true) => format!("{speaker} hoparlörüne bağlı: kayıpsız 16 bit/44,1 kHz, {latency_ms} ms gecikme (otomatik)"),
+        (true, false) => format!("{speaker} hoparlörüne bağlı: kayıpsız 16 bit/44,1 kHz, {latency_ms} ms gecikme"),
+        (false, true) => format!("Connected to {speaker}: lossless 16-bit/44.1 kHz, {latency_ms} ms latency (automatic)"),
+        (false, false) => format!("Connected to {speaker}: lossless 16-bit/44.1 kHz, {latency_ms} ms latency"),
+    }
+}
+
+pub fn latency_raised(latency_ms: u32) -> String {
     if turkish() {
-        format!("{speaker} hoparlörüne bağlı: kayıpsız 16 bit/44,1 kHz, {latency_ms} ms gecikme")
+        format!("Wi-Fi dalgalandı; ses kesilmesin diye gecikme {latency_ms} ms'ye çıkarıldı")
     } else {
-        format!("Connected to {speaker}: lossless 16-bit/44.1 kHz, {latency_ms} ms latency")
+        format!("The Wi-Fi stuttered; latency raised to {latency_ms} ms to keep the sound uninterrupted")
+    }
+}
+
+/// One line about the path to the speaker, from the worst round trip of the last 20 minutes.
+pub fn network(worst_ms: Option<u32>) -> String {
+    match (turkish(), worst_ms) {
+        (true, None) => "Ağ: ölçülüyor…".into(),
+        (false, None) => "Network: measuring…".into(),
+        (true, Some(w)) if w <= 40 => format!("Ağ: iyi (son 20 dk en kötü {w} ms)"),
+        (true, Some(w)) => format!("Ağ: dalgalı (son 20 dk en kötü {w} ms)"),
+        (false, Some(w)) if w <= 40 => format!("Network: good (worst {w} ms in 20 min)"),
+        (false, Some(w)) => format!("Network: unsteady (worst {w} ms in 20 min)"),
     }
 }
 

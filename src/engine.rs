@@ -5,6 +5,7 @@ use crate::capture::Capture;
 use crate::config::{Config, SpeakerRef};
 use crate::devices::{self, Volume, ALL_ROLES};
 use crate::discovery::Speaker;
+use crate::netmon::NetMonitor;
 use crate::raop::{FirewallBlocked, Session};
 use crate::{i18n, kef, tray, update};
 use std::net::IpAddr;
@@ -20,11 +21,19 @@ const POLL: Duration = Duration::from_secs(2);
 /// After another source took over, it must stay silent this long before the stream returns.
 const QUIET_BEFORE_RECONNECT: Duration = Duration::from_secs(5);
 pub const LATENCIES_MS: [u32; 7] = [60, 80, 100, 120, 150, 200, 300];
+/// Automatic latency: the worst round trip of the last 20 minutes plus a margin, within these bounds. Wi-Fi
+/// delay bursts recur (the KEF scans for networks every 15 minutes), so the window has to outlast them.
+pub const AUTO_WINDOW: Duration = Duration::from_secs(20 * 60);
+const AUTO_MARGIN_MS: u32 = 40;
+const AUTO_MIN_MS: u32 = 60;
+const AUTO_MAX_MS: u32 = 400;
+const AUTO_START_MS: u32 = 100; // until 20 s of measurements exist
 
 pub enum Command {
     Connect,
     Disconnect,
     SetLatency(u32),
+    SetAutoLatency,
     SelectSpeaker(Speaker),
     SetCapture(String),
     Quit,
@@ -52,6 +61,7 @@ pub struct Shared {
     /// A verified download waiting to be installed: (tag, path).
     pub update_ready: Mutex<Option<(String, PathBuf)>>,
     pub restart_for_update: AtomicBool,
+    pub netmon: Arc<NetMonitor>,
 }
 
 pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -71,7 +81,13 @@ impl Shared {
             stopping: AtomicBool::new(false),
             update_ready: Mutex::new(None),
             restart_for_update: AtomicBool::new(false),
+            netmon: NetMonitor::start(),
         })
+    }
+
+    /// Worst round trip to the speaker in the automatic-latency window, once measured for 20 s.
+    pub fn worst_round_trip(&self) -> Option<u32> {
+        self.netmon.worst(AUTO_WINDOW, Duration::from_secs(20))
     }
 
     /// Shows a notification without changing the status.
@@ -198,6 +214,11 @@ struct Supervisor {
     retry_at: Option<Instant>,
     seen_volume: Option<u32>,
     stream: Option<JoinHandle<()>>,
+    latency: u32,
+    latency_changed: Instant,
+    raise_noticed: Option<Instant>,
+    quiet_reconnect: bool,
+    burst_since: Option<Instant>,
 }
 
 impl Supervisor {
@@ -214,6 +235,11 @@ impl Supervisor {
             retry_at: None,
             seen_volume: None,
             stream: None,
+            latency: AUTO_START_MS,
+            latency_changed: Instant::now(),
+            raise_noticed: None,
+            quiet_reconnect: false,
+            burst_since: None,
         }
     }
 
@@ -242,7 +268,16 @@ impl Supervisor {
                 self.paused = true;
             }
             Command::SetLatency(ms) => {
-                self.update_config(|c| c.latency_ms = ms);
+                self.update_config(|c| {
+                    c.latency_ms = ms;
+                    c.auto_latency = false;
+                });
+                if self.session().is_some() {
+                    self.reconnect();
+                }
+            }
+            Command::SetAutoLatency => {
+                self.update_config(|c| c.auto_latency = true);
                 if self.session().is_some() {
                     self.reconnect();
                 }
@@ -283,6 +318,9 @@ impl Supervisor {
             return self.status(State::Error, i18n::no_speaker().into());
         };
         let Some(capture) = self.ensure_capture(&config) else { return };
+        if let Ok(IpAddr::V4(ip)) = speaker.host.parse() {
+            self.shared.netmon.set_target(ip);
+        }
         let is_kef = match self.is_kef {
             Some(known) => known,
             None => match kef::probe(&speaker.host, speaker.port) {
@@ -347,7 +385,8 @@ impl Supervisor {
                 self.quiet_since = None;
             } else {
                 self.follow_speaker_volume(&session, capture, status.volume);
-                return self.ensure_default_output(capture);
+                self.ensure_default_output(capture);
+                return self.adjust_latency(speaker, config, capture);
             }
         }
         if !status.on {
@@ -374,7 +413,8 @@ impl Supervisor {
                 self.taken_over = true;
                 return self.status(State::Busy, i18n::taken_over(&speaker.name));
             }
-            return self.ensure_default_output(capture);
+            self.ensure_default_output(capture);
+            return self.adjust_latency(speaker, config, capture);
         }
         if (self.taken_over && !self.force) || self.retry_at.is_some_and(|t| Instant::now() < t) {
             return;
@@ -417,8 +457,14 @@ impl Supervisor {
             let _ = v.set_slider(volume as f32 / 100.0);
         }
         capture.reset();
-        self.status(State::Starting, i18n::connecting(&speaker.name));
-        match Session::connect(host, speaker.port, config.latency_ms, if muted { 0 } else { volume }) {
+        let latency = self.wanted_latency(config);
+        self.latency = latency;
+        self.latency_changed = Instant::now();
+        let announce = !std::mem::take(&mut self.quiet_reconnect);
+        if announce {
+            self.status(State::Starting, i18n::connecting(&speaker.name));
+        }
+        match Session::connect(host, speaker.port, latency, if muted { 0 } else { volume }) {
             Ok(session) => {
                 session.note_volume(volume);
                 let (s, c) = (session.clone(), capture.clone());
@@ -436,8 +482,9 @@ impl Supervisor {
                 if let Err(e) = devices::set_default_output(&capture.device_id, &ALL_ROLES) {
                     log::warn!("making the capture output the default: {e:#}");
                 }
-                log::info!("connected to {} at {host}, latency {} ms, volume {volume}", speaker.name, config.latency_ms);
-                self.shared.set_status(State::Connected, i18n::connected(&speaker.name, config.latency_ms), true);
+                log::info!("connected to {} at {host}, latency {latency} ms, volume {volume}", speaker.name);
+                let text = i18n::connected(&speaker.name, latency, config.auto_latency);
+                self.shared.set_status(State::Connected, text, announce);
             }
             Err(e) => {
                 let firewall = e.is::<FirewallBlocked>();
@@ -449,6 +496,51 @@ impl Supervisor {
                     self.status(State::Error, i18n::connect_failed(&speaker.name));
                 }
             }
+        }
+    }
+
+    /// The latency to use now: the fixed one, or the worst round trip of the last 20 minutes plus a margin.
+    fn wanted_latency(&self, config: &Config) -> u32 {
+        if !config.auto_latency {
+            return config.latency_ms;
+        }
+        self.shared.worst_round_trip().map_or(AUTO_START_MS, |worst| {
+            ((worst + AUTO_MARGIN_MS).div_ceil(10) * 10).clamp(AUTO_MIN_MS, AUTO_MAX_MS)
+        })
+    }
+
+    /// Raises the latency once a Wi-Fi delay burst is over, in one step to cover its peak (a raise mid-burst
+    /// would only add a reconnect gap to the dropouts); a burst lasting over 15 s gets a raise right away.
+    /// Lowers it only after a calm spell and while nothing plays, so the brief reconnect is never heard.
+    fn adjust_latency(&mut self, speaker: &SpeakerRef, config: &Config, capture: &Arc<Capture>) {
+        if !config.auto_latency {
+            return;
+        }
+        let wanted = self.wanted_latency(config);
+        let since_change = self.latency_changed.elapsed();
+        if wanted < self.latency + 20 {
+            self.burst_since = None;
+        } else if self.burst_since.is_none() {
+            self.burst_since = Some(Instant::now());
+        }
+        let recent = self.shared.netmon.worst(Duration::from_secs(4), Duration::ZERO);
+        let burst_over = recent.is_some_and(|w| w + AUTO_MARGIN_MS < self.latency);
+        let burst_long = self.burst_since.is_some_and(|t| t.elapsed() >= Duration::from_secs(15));
+        let raise = self.burst_since.is_some() && (burst_over || burst_long) && since_change >= Duration::from_secs(10);
+        let lower = wanted + 30 <= self.latency
+            && since_change >= Duration::from_secs(120)
+            && capture.quiet_for() >= Duration::from_secs(3);
+        if !raise && !lower {
+            return;
+        }
+        log::info!("automatic latency {} -> {wanted} ms (worst round trip {:?} ms)", self.latency, self.shared.worst_round_trip());
+        self.burst_since = None;
+        self.drop_session("latency change");
+        self.quiet_reconnect = true;
+        self.connect(speaker, config, capture, None);
+        if raise && self.raise_noticed.map_or(true, |t| t.elapsed() >= Duration::from_secs(600)) {
+            self.raise_noticed = Some(Instant::now());
+            self.shared.notify(i18n::latency_raised(wanted));
         }
     }
 

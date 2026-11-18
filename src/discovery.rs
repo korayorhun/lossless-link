@@ -1,6 +1,6 @@
 //! Finds AirPlay 1 (RAOP) receivers on the local network that accept unencrypted ALAC, via mDNS.
 
-use mdns_sd::{ServiceDaemon, ServiceEvent};
+use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -22,6 +22,10 @@ pub fn start(list: Arc<Mutex<Vec<Speaker>>>) {
         Ok(d) => d,
         Err(e) => return log::warn!("mDNS is unavailable: {e}"),
     };
+    // IPv4 on real adapters only: a VPN tunnel such as Cloudflare WARP can't carry multicast and only fills the
+    // log with send errors.
+    let _ = daemon.disable_interface(IfKind::IPv6);
+    let _ = daemon.disable_interface(IfKind::Name("CloudflareWARP".into()));
     let events = match daemon.browse("_raop._tcp.local.") {
         Ok(r) => r,
         Err(e) => return log::warn!("mDNS browse failed: {e}"),

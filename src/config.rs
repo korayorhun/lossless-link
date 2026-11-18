@@ -20,11 +20,20 @@ pub struct Config {
     /// Highest speaker volume the Windows volume keys can set.
     pub max_volume: u32,
     pub auto_update: bool,
+    /// Follow the measured Wi-Fi delays instead of the fixed `latency_ms`.
+    pub auto_latency: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { latency_ms: 100, speaker: None, capture_device: None, max_volume: 70, auto_update: true }
+        Self {
+            latency_ms: 100,
+            speaker: None,
+            capture_device: None,
+            max_volume: 70,
+            auto_update: true,
+            auto_latency: true,
+        }
     }
 }
 

@@ -27,6 +27,7 @@ pub fn init_logging() {
         let mut config = simplelog::ConfigBuilder::new();
         let _ = config.set_time_offset_to_local();
         config.set_time_format_rfc3339();
+        config.add_filter_ignore_str("mdns_sd"); // it logs every failed multicast send as an error
         let _ = simplelog::WriteLogger::init(log::LevelFilter::Info, config.build(), file);
     }
     let _ = LOG_PATH.set(path);

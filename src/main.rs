@@ -14,6 +14,7 @@ mod discovery;
 mod engine;
 mod i18n;
 mod kef;
+mod netmon;
 mod raop;
 mod system;
 mod tray;

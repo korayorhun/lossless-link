@@ -13,7 +13,8 @@ Lossless Link streams everything Windows plays as **uncompressed ALAC (16-bit/44
 
 - **Bit-exact for CD-quality sources.** ALAC frames carry plain PCM. Samples that are already 16-bit pass through untouched, and anything finer is dithered once (TPDF) to 16 bit.
 - **Clean capture path.** On start it turns off driver audio effects (Realtek, DTS and the like) on the capture output and sets that output to 44.1 kHz, so nothing alters or resamples the sound before it's captured.
-- **Adjustable latency from 60 to 300 ms.** The KEF LS LUXE plays streams with as little as 80 ms of latency.
+- **Automatic latency.** It pings the speaker five times a second and sets the latency to the worst round trip of the last 20 minutes plus a margin (60–400 ms). Wi-Fi hiccups raise it straight away. It comes back down only after a calm spell and while nothing plays, so the brief reconnect is never heard. You can also pick a fixed latency from 60 to 300 ms; the KEF LS LUXE plays streams with as little as 80 ms. The menu shows how steady the network has been.
+- **Priority on the network.** Audio packets are marked as voice traffic, so routers that honour it (Wi-Fi WMM) send them ahead of downloads.
 - **Volume keys control the speaker.** The Windows volume keys set the speaker's own volume, and the stream itself always goes out at full level. On KEF speakers, volume changes made with the remote also move the Windows slider.
 - **Finds speakers automatically.** It discovers AirPlay speakers on the network with mDNS and follows a speaker whose IP address changes.
 - **KEF integration.** It connects when you switch the speaker on and never wakes a speaker in standby. When Spotify, Tidal, Qobuz or Bluetooth takes over, it steps aside and comes back once the other source has gone quiet.
@@ -45,7 +46,7 @@ Starting the program a second time stops the running copy, so one shortcut works
 | Grey | The speaker is off (standby) or can't be found |
 | Orange | Starting, or a problem the tooltip explains |
 
-If the sound trails the picture, lower **Latency**. If it drops out, raise it.
+**Latency → Automatic** is the default. If the menu says the network is unsteady, the speaker's Wi-Fi is the weak link. A 5 GHz connection or an Ethernet cable to the speaker lets the latency drop to 60–80 ms, where sound and picture line up best. With a fixed latency, lower it if the sound trails the picture and raise it if the sound drops out.
 
 ## How it works
 

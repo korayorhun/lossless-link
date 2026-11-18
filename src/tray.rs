@@ -40,6 +40,7 @@ const ID_LOG: usize = 5;
 const ID_QUIT: usize = 6;
 const ID_AUTO_UPDATE: usize = 7;
 const ID_INSTALL_UPDATE: usize = 8;
+const ID_AUTO_LATENCY: usize = 9;
 const ID_SPEAKER: usize = 100;
 const ID_LATENCY: usize = 200;
 const ID_CAPTURE: usize = 300;
@@ -212,6 +213,7 @@ unsafe fn show_menu(hwnd: HWND) {
 
     let Ok(menu) = CreatePopupMenu() else { return };
     append(menu, MF_STRING | MF_GRAYED, 0, &text);
+    append(menu, MF_STRING | MF_GRAYED, 0, &i18n::network(shared.worst_round_trip()));
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     if state == State::Connected {
         append(menu, MF_STRING, ID_DISCONNECT, i18n::menu_disconnect());
@@ -229,8 +231,10 @@ unsafe fn show_menu(hwnd: HWND) {
         submenu(menu, sub, i18n::menu_speaker());
     }
     if let Ok(sub) = CreatePopupMenu() {
+        append(sub, checked(config.auto_latency), ID_AUTO_LATENCY, i18n::menu_latency_auto());
+        let _ = AppendMenuW(sub, MF_SEPARATOR, 0, PCWSTR::null());
         for (i, ms) in LATENCIES_MS.iter().enumerate() {
-            append(sub, checked(config.latency_ms == *ms), ID_LATENCY + i, &format!("{ms} ms"));
+            append(sub, checked(!config.auto_latency && config.latency_ms == *ms), ID_LATENCY + i, &format!("{ms} ms"));
         }
         submenu(menu, sub, i18n::menu_latency());
     }
@@ -261,6 +265,7 @@ unsafe fn show_menu(hwnd: HWND) {
 
     let command = match chosen {
         ID_CONNECT => Some(Command::Connect),
+        ID_AUTO_LATENCY => Some(Command::SetAutoLatency),
         ID_DISCONNECT => Some(Command::Disconnect),
         ID_AUTOSTART => {
             system::set_autostart(!system::autostart_enabled());

@@ -11,10 +11,16 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, UdpSocket};
+use std::os::windows::io::AsRawSocket;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::NetworkManagement::QoS::{
+    QOSAddSocketToFlow, QOSCloseHandle, QOSCreateHandle, QOSTrafficTypeVoice, QOS_NON_ADAPTIVE_FLOW, QOS_VERSION,
+};
+use windows::Win32::Networking::WinSock::{AF_INET, IN_ADDR, IN_ADDR_0, SOCKADDR, SOCKADDR_IN, SOCKET};
 
 pub const RATE: u32 = 44_100;
 pub const FRAMES: usize = 352; // frames per RTP packet
@@ -162,10 +168,46 @@ pub struct Session {
     pub resent: AtomicU64,
     timing_seen: AtomicBool,
     history: Mutex<Vec<Vec<u8>>>,
+    qos: Mutex<isize>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Marks a socket's packets as voice traffic, so a router that honours it (DSCP to the Wi-Fi WMM voice queue)
+/// sends them ahead of bulk traffic. Best effort: the stream works without it.
+fn prioritize(qos: &mut isize, socket: &UdpSocket, to: SocketAddr) {
+    let SocketAddr::V4(to) = to else { return };
+    unsafe {
+        if *qos == 0 {
+            let mut handle = HANDLE::default();
+            if !QOSCreateHandle(&QOS_VERSION { MajorVersion: 1, MinorVersion: 0 }, &mut handle).as_bool() {
+                return log::info!("QoS is unavailable: {}", windows::core::Error::from_win32());
+            }
+            *qos = handle.0 as isize;
+        }
+        let addr = SOCKADDR_IN {
+            sin_family: AF_INET,
+            sin_port: to.port().to_be(),
+            sin_addr: IN_ADDR { S_un: IN_ADDR_0 { S_addr: u32::from_ne_bytes(to.ip().octets()) } },
+            ..Default::default()
+        };
+        let mut flow = 0u32;
+        let marked = QOSAddSocketToFlow(
+            HANDLE(*qos as *mut _),
+            SOCKET(socket.as_raw_socket() as usize),
+            Some((&addr as *const SOCKADDR_IN).cast::<SOCKADDR>()),
+            QOSTrafficTypeVoice,
+            QOS_NON_ADAPTIVE_FLOW,
+            &mut flow,
+        );
+        if marked.as_bool() {
+            log::info!("packets to {to} marked as voice traffic");
+        } else {
+            log::info!("QoS marking for {to} not applied: {}", windows::core::Error::from_win32());
+        }
+    }
 }
 
 impl Session {
@@ -206,6 +248,7 @@ impl Session {
             resent: AtomicU64::new(0),
             timing_seen: AtomicBool::new(false),
             history: Mutex::new(vec![Vec::new(); HISTORY]),
+            qos: Mutex::new(0),
         });
         let s = session.clone();
         thread::Builder::new().name("raop-timing".into()).spawn(move || s.timing_loop())?;
@@ -248,8 +291,13 @@ impl Session {
                 .and_then(|t| t.split(';').find_map(|p| p.strip_prefix(key)?.strip_prefix('=')?.parse().ok()))
                 .ok_or_else(|| anyhow!("SETUP reply has no {key}"))
         };
-        let _ = self.server_audio.set(SocketAddr::new(host, port("server_port")?));
-        let _ = self.server_ctrl.set(SocketAddr::new(host, port("control_port")?));
+        let (audio_to, ctrl_to) = (SocketAddr::new(host, port("server_port")?), SocketAddr::new(host, port("control_port")?));
+        let _ = self.server_audio.set(audio_to);
+        let _ = self.server_ctrl.set(ctrl_to);
+        let mut qos = lock(&self.qos);
+        prioritize(&mut qos, &self.audio, audio_to);
+        prioritize(&mut qos, &self.ctrl, ctrl_to);
+        drop(qos);
         rtsp.session = setup.headers.get("session").map(|s| s.split(';').next().unwrap_or(s).to_string());
         let info = format!("seq={};rtptime={}", self.seq0, self.rtp0);
         rtsp.expect_ok("RECORD", &self.uri, &[("Range", "npt=0-"), ("RTP-Info", &info)], &[])?;
@@ -299,6 +347,12 @@ impl Session {
             log::info!("TEARDOWN: {e:#}");
         }
         let _ = rtsp.stream.shutdown(Shutdown::Both);
+        let qos = std::mem::take(&mut *lock(&self.qos));
+        if qos != 0 {
+            unsafe {
+                let _ = QOSCloseHandle(HANDLE(qos as *mut _));
+            }
+        }
     }
 
     /// Sends audio until stopped; `fill` provides FRAMES interleaved stereo samples per packet.
