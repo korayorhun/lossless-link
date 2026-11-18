@@ -1,6 +1,6 @@
 [package]
 name = "lossless-link"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Lossless, low-latency audio from Windows to AirPlay (RAOP) speakers"
 license = "MIT"

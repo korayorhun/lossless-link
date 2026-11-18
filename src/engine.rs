@@ -518,7 +518,10 @@ impl Supervisor {
         }
         let wanted = self.wanted_latency(config);
         let since_change = self.latency_changed.elapsed();
-        if wanted < self.latency + 20 {
+        // Only a round trip that came within 15 ms of the latency (or past it) calls for more: smaller spikes
+        // are what the margin is for, and every change costs a short reconnect.
+        let threatened = self.shared.worst_round_trip().is_some_and(|w| w + 15 >= self.latency);
+        if !threatened || wanted <= self.latency {
             self.burst_since = None;
         } else if self.burst_since.is_none() {
             self.burst_since = Some(Instant::now());
